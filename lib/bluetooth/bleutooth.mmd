@@ -1,0 +1,12 @@
+classDiagram
+    class JsonBluetooth {
+        +String deviceName
+        
+        +JsonBluetooth(String name)
+        +bool start()
+        +bool send(String json)
+        +bool isConnected()
+        +void onMessage(function callback)
+        +void onConnect(function callback)
+        +void onDisconnect(function callback)
+    }

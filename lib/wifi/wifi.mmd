@@ -1,0 +1,16 @@
+classDiagram
+    class Wifi{
+        +String ssid
+        +String password
+        +boolean isConnected
+        +String status
+        +void setCredentials(String ssid, String password)
+        +boolean connect()
+        +void disconnect()
+        +boolean reconnect()
+        +List~String~ scanNetworks()
+        +String getStatus()
+        +String getIP()
+        +int getSignalStrength()
+        +boolean isConnected()
+    }
