@@ -37,6 +37,7 @@ void factoryReset();
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
 
   pinMode(relayPin, OUTPUT);
   digitalWrite(relayPin, LOW);
@@ -55,12 +56,7 @@ void setup() {
     ssid = storage->getSSID();
     password = storage->getPassword();
     Serial.printf("ssid : %s, password: %s\n", ssid.c_str(), password.c_str());
-    if (storage->getReset()){
-      shouldConnectToWiFi = false;
-      storage->setReset(false);
-    } else {
-      shouldConnectToWiFi = true;
-    }
+    shouldConnectToWiFi = true;
     Serial.println("✅ Loaded stored Wi-Fi credentials");
   } else {
     Serial.println("⚠️ No credentials found, starting BLE setup...");
@@ -195,8 +191,6 @@ void startBLE() {
     Serial.println(DEVICE_NAME);
 
     storage->load();
-    Serial.printf("reset: %d", (int)storage->getReset());
-
   } else {
     Serial.println("❌ BLE start failed!");
   }
@@ -235,7 +229,7 @@ void connectWiFi() {
 // -------------------- FACTORY RESET --------------------
 void factoryReset() {
   Serial.println("⚠️ Performing factory reset...");
-  if (storage) storage->setReset(true);
+  if (storage) storage->clear();
   delay(500);
   ESP.restart(); // Software reset
 }
