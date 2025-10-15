@@ -4,6 +4,7 @@ JsonBluetooth::JsonBluetooth(String name)
     : deviceName(name), 
       connected(false), 
       advertising(false),
+      stopped(false),
       pServer(nullptr),
       pService(nullptr),
       pTxCharacteristic(nullptr),
@@ -29,6 +30,7 @@ bool JsonBluetooth::start() {
     
     BLEDevice::startAdvertising();
     advertising = true;
+    stopped = false;
     
     Serial.println("JSON Bluetooth started successfully");
     Serial.println("Device name: " + deviceName);
@@ -119,7 +121,12 @@ void JsonBluetooth::update() {
 }
 
 void JsonBluetooth::stop() {
+    stopped=true;
     BLEDevice::deinit(true);
+}
+
+bool JsonBluetooth::isStopped(){
+    return stopped;
 }
 
 JsonBluetooth::~JsonBluetooth() {

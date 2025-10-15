@@ -1,0 +1,32 @@
+flowchart TD
+    A[System Boot] --> B[Init Serial + Relay]
+    B --> C[Init Storage + Wifi]
+    C --> D{Load Credentials?}
+    D -->|Yes| E[shouldConnectToWiFi = true]
+    D -->|No| F[Start BLE Task]
+    E --> G[Start WiFi Task]
+    F --> G
+    G --> H[Start Relay Task]
+    H --> I[FreeRTOS Scheduler Starts 🔁]
+
+    subgraph TaskBLE
+    J1[Wait for BLE JSON msg]
+    J1 --> J2[Extract ssid/password]
+    J2 --> J3[Save to NVS]
+    J3 --> J4[Notify WiFi Task to connect]
+    J4 --> J1
+    end
+
+    subgraph TaskWiFi
+    K1[Check shouldConnectToWiFi]
+    K1 --> K2["Try wifi->connect()"]
+    K2 -->|Success| K3[Set wifiConnected=true]
+    K2 -->|Fail| K4[Resume BLE Task]
+    K3 --> K1
+    end
+
+    subgraph TaskRelay
+    L1[Read wifiConnected]
+    L1 --> L2[Set relayPin HIGH/LOW]
+    L2 --> L1
+    end

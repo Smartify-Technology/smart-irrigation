@@ -8,11 +8,13 @@ Storage::~Storage() {
 String Storage::getSSID() const { return ssid; }
 String Storage::getPassword() const { return password; }
 String Storage::getDeviceName() const { return deviceName; }
+bool Storage::getReset() const { return reset; }
 
 // --- Setters ---
 void Storage::setSSID(const String &s) { ssid = s; }
 void Storage::setPassword(const String &p) { password = p; }
 void Storage::setDeviceName(const String &n) { deviceName = n; }
+void Storage::setReset(const bool &r) { reset = r; }
 
 // --- Save ---
 bool Storage::save() {
@@ -21,6 +23,7 @@ bool Storage::save() {
     prefs.putString("ssid", ssid);
     prefs.putString("password", password);
     prefs.putString("deviceName", deviceName);
+    prefs.putBool("reset", reset);
 
     prefs.end();
     return true;
@@ -33,6 +36,7 @@ bool Storage::load() {
     ssid = prefs.getString("ssid", "");
     password = prefs.getString("password", "");
     deviceName = prefs.getString("deviceName", "");
+    reset = prefs.getBool("reset", false);
 
     prefs.end();
     return !(ssid.isEmpty() || password.isEmpty() || deviceName.isEmpty());

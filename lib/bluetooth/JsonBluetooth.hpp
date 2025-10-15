@@ -25,6 +25,7 @@ private:
     String deviceName;
     bool connected;
     bool advertising;
+    bool stopped;
     
 
     // Callbacks
@@ -84,6 +85,7 @@ public:
     void stop();
     bool send(String json);
     bool isConnected();
+    bool isStopped();
     
     // Callback setters
     void onMessage(std::function<void(String json)> callback);
