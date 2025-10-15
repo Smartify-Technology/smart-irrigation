@@ -1,10 +1,9 @@
 #include "MQTT.hpp"
 
-MQTT::MQTT() : broker(""), port(1883), client(wifiClient) {}
-
-MQTT::MQTT(String broker, uint16_t port)
-    : broker(broker), port(port), client(wifiClient) {
-    clientId = "ESP32-" + String(random(0xFFFF), HEX);
+MQTT::MQTT(String broker, uint16_t port, const char* rootCA)
+    : broker(broker), port(port), client(wifiClient), root_ca(rootCA) {
+    clientId = "ESP32-" + String(random(0xffff), HEX);
+    wifiClient.setCACert(root_ca);  // Set the root CA for TLS validation
 }
 
 void MQTT::setCredentials(String user, String pass) {
@@ -27,29 +26,34 @@ void MQTT::setCallback(std::function<void(String, String)> cb) {
 
 bool MQTT::connect() {
     client.setServer(broker.c_str(), port);
+
     if (client.connected()) return true;
 
-    Serial.printf("🔗 Connecting to MQTT broker %s:%d...\n", broker.c_str(), port);
+    Serial.printf("Connecting to MQTT broker %s:%d (TLS)...\n", broker.c_str(), port);
 
-    if (username.isEmpty())
-        client.connect(clientId.c_str());
-    else
-        client.connect(clientId.c_str(), username.c_str(), password.c_str());
+    String willTopic = topicPrefix.isEmpty() ? "status" : topicPrefix + "/status";
+    const char* user = username.isEmpty() ? nullptr : username.c_str();
+    const char* pass = password.isEmpty() ? nullptr : password.c_str();
 
-    if (client.connected()) {
-        Serial.println("✅ MQTT connected!");
+    bool connected = client.connect(clientId.c_str(), user, pass, willTopic.c_str(), 0, true, "offline");
+
+    if (connected) {
+        Serial.println("MQTT connected!");
+        client.publish(willTopic.c_str(), "online", true);
         lastReconnectAttempt = 0;
         return true;
     } else {
-        Serial.println("❌ MQTT connection failed.");
+        Serial.printf("MQTT connection failed, rc=%d\n", client.state());
         return false;
     }
 }
 
 void MQTT::disconnect() {
     if (client.connected()) {
+        String willTopic = topicPrefix.isEmpty() ? "status" : topicPrefix + "/status";
+        client.publish(willTopic.c_str(), "offline", true);
         client.disconnect();
-        Serial.println("🔌 MQTT disconnected.");
+        Serial.println("MQTT disconnected.");
     }
 }
 

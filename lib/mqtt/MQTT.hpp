@@ -2,7 +2,7 @@
 #define MQTT_HPP
 
 #include <Arduino.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>  // Secure client for TLS
 #include <PubSubClient.h>
 #include <functional>
 
@@ -15,17 +15,17 @@ private:
     String password;
     String topicPrefix;
 
-    WiFiClient wifiClient;
+    WiFiClientSecure wifiClient;  // Secure TLS client
     PubSubClient client;
     unsigned long lastReconnectAttempt = 0;
 
     std::function<void(String, String)> messageCallback;
+    const char* root_ca;  // Root CA certificate
 
     bool reconnect();
 
 public:
-    MQTT();
-    MQTT(String broker, uint16_t port);
+    MQTT(String broker, uint16_t port, const char* rootCA);
 
     void setCredentials(String username, String password);
     void setTopicPrefix(String prefix);
