@@ -1,0 +1,25 @@
+classDiagram
+    class Actuator {
+        - int pin
+        - bool state
+        + Actuator(int pin)
+        + void activate()
+        + void deactivate()
+        + bool isActive()
+    }
+
+    class EV {
+        + EV(int pin)
+    }
+
+    class WaterPump {
+        + WaterPump(int pin)
+    }
+
+    class Led {
+        + Led(int pin)
+    }
+
+    Actuator <|-- EV
+    Actuator <|-- WaterPump
+    Actuator <|-- Led

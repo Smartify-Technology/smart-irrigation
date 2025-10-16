@@ -1,9 +1,11 @@
+
 #include <Arduino.h>
 #include "JsonBluetooth.hpp"
 #include "Wifi.hpp"
 #include "Storage.hpp"
 #include "MQTT.hpp"
 #include "certificates.h"
+#include "EV/EV.hpp"
 
 // -------------------- Constants ------------------------
 String const DEVICE_NAME = "Smartify-Irrigation-Scheduler";
@@ -18,6 +20,7 @@ JsonBluetooth* jsonBT = nullptr;
 Wifi* wifi = nullptr;
 Storage* storage = nullptr;
 MQTT* mqtt = nullptr;
+EV T_ev[8] = {EV(13, 1), EV(12, 2), EV(14, 3), EV(27, 4), EV(26, 5), EV(25, 6), EV(33, 7), EV(32, 8)};
 
 // -------------------- Shared State --------------------
 String ssid = "";
@@ -27,7 +30,7 @@ bool wifiConnected = false;
 bool relayState = false; // Controlled via MQTT
 
 // -------------------- Pins Config ---------------------
-const int relayPin = 4;
+const int relayPin = 14;
 #define RESET_BUTTON_PIN 0
 
 // -------------------- Task Handles --------------------
@@ -137,27 +140,47 @@ void TaskWiFi(void* pvParameters) {
 //                        MQTT TASK
 // ======================================================
 void TaskMQTT(void* pvParameters) {
-  const String commandTopic = "relay";
+  const String commandTopic = "ev";
   const String statusTopic = "status";
 
   mqtt->setCallback([](String topic, String payload) {
     Serial.printf("📩 MQTT Message | Topic: %s | Payload: %s\n", topic.c_str(), payload.c_str());
 
-    if (topic.endsWith("/relay")) {
+    if (topic.endsWith("/ev")) {
       payload.trim();
-      if (payload.equalsIgnoreCase("ON")) {
-        relayState = true;
-        digitalWrite(relayPin, HIGH);
-        Serial.println("🔆 Relay turned ON via MQTT");
-      } else if (payload.equalsIgnoreCase("OFF")) {
-        relayState = false;
-        digitalWrite(relayPin, LOW);
-        Serial.println("🌑 Relay turned OFF via MQTT");
-      } else {
-        mqtt->publish("status", "⚠️ Invalid MQTT payload. Use 'ON' or 'OFF'.");
-        Serial.println("⚠️ Invalid MQTT payload. Use 'ON' or 'OFF'.");
+      int evIndex = payload.indexOf("ev\":\"");
+      int stateIndex = payload.indexOf("state\":\"");
+
+      if ( evIndex != -1 && stateIndex != -1) {
+        evIndex += 5;
+        int evEnd = payload.indexOf("\"", evIndex);
+        stateIndex += 8;
+        int stateEnd = payload.indexOf("\"", stateIndex);
+
+        if (evEnd != -1 && stateEnd != -1) {
+          int evNumber = payload.substring(evIndex, evEnd).toInt();
+          String state = payload.substring(stateIndex, stateEnd);
+
+          if (evNumber >= 1 && evNumber <= 8) {
+            if (state.equalsIgnoreCase("ON")) {
+              T_ev[evNumber - 1].activate();
+              mqtt->publish("status", "🔆 Relay turned ON via MQTT");
+              Serial.println("🔆 Relay turned ON via MQTT");
+            } else if (state.equalsIgnoreCase("OFF")) {
+              T_ev[evNumber - 1].deactivate();
+              mqtt->publish("status", "🌑 Relay turned OFF via MQTT");
+              Serial.println("🌑 Relay turned OFF via MQTT");
+            } else {
+              mqtt->publish("status", "⚠️ Invalid MQTT payload. Use 'ON' or 'OFF'.");
+              Serial.println("⚠️ Invalid MQTT payload.");
+            }
+          } else {
+            mqtt->publish("status", "⚠️ Invalid MQTT payload. Use a valid EV number (1-8).");
+            Serial.println("⚠️ Invalid MQTT payload. Use a valid EV number (1-8).");
+          }
+        }
       }
-    }
+    }  
   });
 
   for (;;) {
