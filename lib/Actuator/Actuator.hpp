@@ -19,12 +19,12 @@ public:
     virtual int getPin() const { return pin; }
 
     virtual void activate() {
-        digitalWrite(pin, HIGH);
+        digitalWrite(pin, LOW);
         state = true;
     }
 
     virtual void deactivate() {
-        digitalWrite(pin, LOW);
+        digitalWrite(pin, HIGH);
         state = false;
     }
 

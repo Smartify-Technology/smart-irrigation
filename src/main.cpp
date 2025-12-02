@@ -5,6 +5,7 @@
 #include "Storage.hpp"
 #include "MQTT.hpp"
 #include "certificates.h"
+#include "Led/Led.hpp"
 #include "EV/EV.hpp"
 
 // -------------------- Constants ------------------------
@@ -14,13 +15,17 @@ int const PORT = 8883;
 String const USERNAME = "medhedi";
 String const PASSWORD = "Dhri6qKELqbLRUf";
 String const TOPIC_PREFIX = "smartfarm/68646cb41e96a4add03b28ae";
+int EV_NUMBER = 12;
 
 // -------------------- Global Objects --------------------
 JsonBluetooth* jsonBT = nullptr;
 Wifi* wifi = nullptr;
 Storage* storage = nullptr;
 MQTT* mqtt = nullptr;
-EV T_ev[8] = {EV(13, 1), EV(12, 2), EV(14, 3), EV(27, 4), EV(26, 5), EV(25, 6), EV(33, 7), EV(32, 8)};
+EV T_ev[12] = {EV(10, 1), EV(9, 2), EV(13, 3), EV(27, 4), EV(26, 5), EV(25, 6), EV(33, 7), EV(32, 8), EV(19, 9), EV(18, 10), EV(5, 11), EV(17, 12)};
+Led greenLed = Led(16);
+Led yellowLed = Led(4);
+Led redLed = Led(15);
 
 // -------------------- Shared State --------------------
 String ssid = "";
@@ -58,6 +63,9 @@ void setup() {
 
   pinMode(relayPin, OUTPUT);
   digitalWrite(relayPin, LOW);
+  redLed.blink(2000,300);
+  yellowLed.blink(1000,500);
+  greenLed.blink(3000, 600);
 
   pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
 
@@ -161,22 +169,24 @@ void TaskMQTT(void* pvParameters) {
           int evNumber = payload.substring(evIndex, evEnd).toInt();
           String state = payload.substring(stateIndex, stateEnd);
 
-          if (evNumber >= 1 && evNumber <= 8) {
+          if (evNumber >= 1 && evNumber <= EV_NUMBER) {
             if (state.equalsIgnoreCase("ON")) {
               T_ev[evNumber - 1].activate();
-              mqtt->publish("status", "🔆 Relay turned ON via MQTT");
-              Serial.println("🔆 Relay turned ON via MQTT");
+              String log="🔆 Relay "+String(evNumber)+" turned ON";
+              mqtt->publish("status", log);
+              Serial.println(log);
             } else if (state.equalsIgnoreCase("OFF")) {
               T_ev[evNumber - 1].deactivate();
-              mqtt->publish("status", "🌑 Relay turned OFF via MQTT");
-              Serial.println("🌑 Relay turned OFF via MQTT");
+              String log = "🌑 Relay "+String(evNumber)+" turned OFF";
+              mqtt->publish("status", log);
+              Serial.println(log);
             } else {
               mqtt->publish("status", "⚠️ Invalid MQTT payload. Use 'ON' or 'OFF'.");
               Serial.println("⚠️ Invalid MQTT payload.");
             }
           } else {
-            mqtt->publish("status", "⚠️ Invalid MQTT payload. Use a valid EV number (1-8).");
-            Serial.println("⚠️ Invalid MQTT payload. Use a valid EV number (1-8).");
+            mqtt->publish("status", "⚠️ Invalid MQTT payload. Use a valid EV number (1-12).");
+            Serial.println("⚠️ Invalid MQTT payload. Use a valid EV number (1-12).");
           }
         }
       }
