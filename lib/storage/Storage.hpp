@@ -10,6 +10,7 @@ private:
     String ssid;
     String password;
     String deviceName;
+    String operationMode = "manual";
 
 public:
     Storage() = default;
@@ -19,11 +20,13 @@ public:
     String getSSID() const;
     String getPassword() const;
     String getDeviceName() const;
+    String getMode() const;
 
     // Setters
     void setSSID(const String &ssid);
     void setPassword(const String &password);
     void setDeviceName(const String &name);
+    void setMode(const String &mode);
 
     // Persistence
     bool save();

@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include "JsonBluetooth.hpp"
 #include "Wifi.hpp"
@@ -7,6 +6,8 @@
 #include "certificates.h"
 #include "Led/Led.hpp"
 #include "EV/EV.hpp"
+#include "RTC.hpp"
+#include "Schedule.hpp"
 
 // -------------------- Constants ------------------------
 String const DEVICE_NAME = "Smartify-Irrigation-Scheduler";
@@ -16,23 +17,26 @@ String const USERNAME = "medhedi";
 String const PASSWORD = "Dhri6qKELqbLRUf";
 String const TOPIC_PREFIX = "smartfarm/68646cb41e96a4add03b28ae";
 int EV_NUMBER = 12;
+int SDA_PIN=22, SCL_PIN=23;
 
 // -------------------- Global Objects --------------------
 JsonBluetooth* jsonBT = nullptr;
 Wifi* wifi = nullptr;
 Storage* storage = nullptr;
 MQTT* mqtt = nullptr;
-EV T_ev[12] = {EV(10, 1), EV(9, 2), EV(13, 3), EV(27, 4), EV(26, 5), EV(25, 6), EV(33, 7), EV(32, 8), EV(19, 9), EV(18, 10), EV(5, 11), EV(17, 12)};
+EV T_ev[12] = {EV(10, 1), EV(9, 2), EV(13, 3), EV(27, 4), EV(26, 5), EV(25, 6),
+               EV(33, 7), EV(32, 8), EV(19, 9), EV(18, 10), EV(5, 11), EV(17, 12)};
 Led greenLed = Led(16);
 Led yellowLed = Led(4);
 Led redLed = Led(15);
+RTC rtc;
 
 // -------------------- Shared State --------------------
 String ssid = "";
 String password = "";
 bool shouldConnectToWiFi = false;
 bool wifiConnected = false;
-bool relayState = false; // Controlled via MQTT
+String currentMode = "manual";
 
 // -------------------- Pins Config ---------------------
 const int relayPin = 14;
@@ -43,13 +47,14 @@ TaskHandle_t TaskBLEHandle;
 TaskHandle_t TaskWiFiHandle;
 TaskHandle_t TaskMQTTHandle;
 TaskHandle_t TaskResetHandle;
+TaskHandle_t TaskSchedulerHandle;
 
 // -------------------- Function Prototypes --------------------
 void TaskBLE(void* pvParameters);
 void TaskWiFi(void* pvParameters);
 void TaskMQTT(void* pvParameters);
 void TaskReset(void* pvParameters);
-
+void TaskScheduler(void* pvParameters);
 void startBLE();
 void connectWiFi();
 void factoryReset();
@@ -63,13 +68,13 @@ void setup() {
 
   pinMode(relayPin, OUTPUT);
   digitalWrite(relayPin, LOW);
-  redLed.blink(2000,300);
-  yellowLed.blink(1000,500);
+  redLed.blink(2000, 300);
+  yellowLed.blink(1000, 500);
   greenLed.blink(3000, 600);
 
   pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
 
-  Serial.println("\n🚀 System starting...");
+  Serial.println("\nSystem starting...");
 
   storage = new Storage();
   wifi = new Wifi();
@@ -79,31 +84,34 @@ void setup() {
   mqtt->setCredentials(USERNAME, PASSWORD);
   mqtt->setTopicPrefix(TOPIC_PREFIX);
 
-  // Try loading stored credentials
   if (storage->load()) {
     ssid = storage->getSSID();
     password = storage->getPassword();
-    Serial.printf("ssid : %s, password: %s\n", ssid.c_str(), password.c_str());
+    Serial.printf("Loaded WiFi: %s\n", ssid.c_str());
     shouldConnectToWiFi = true;
-    Serial.println("✅ Loaded stored Wi-Fi credentials");
   } else {
-    Serial.println("⚠️ No credentials found, starting BLE setup...");
-    shouldConnectToWiFi = false;
+    Serial.println("No WiFi credentials → starting BLE provisioning");
   }
 
-  // -------------------- Create FreeRTOS Tasks --------------------
+  currentMode = storage->getMode();
+  scheduleManager.load();
+
+  Serial.printf("Mode: %s | Schedules: %d\n", currentMode.c_str(), (int)scheduleManager.schedules.size());
+
+  // Create tasks
   if (!shouldConnectToWiFi)
-    xTaskCreatePinnedToCore(TaskBLE, "BLE Task", 8192, NULL, 1, &TaskBLEHandle, 0);
+    xTaskCreatePinnedToCore(TaskBLE, "BLE", 8192, NULL, 1, &TaskBLEHandle, 0);
 
-  xTaskCreatePinnedToCore(TaskWiFi, "WiFi Task", 8192, NULL, 2, &TaskWiFiHandle, 1);
-  xTaskCreatePinnedToCore(TaskMQTT, "MQTT Task", 8192, NULL, 2, &TaskMQTTHandle, 1);
-  xTaskCreatePinnedToCore(TaskReset, "Reset Task", 2048, NULL, 3, &TaskResetHandle, 1);
+  xTaskCreatePinnedToCore(TaskWiFi,      "WiFi",      8192, NULL, 2, &TaskWiFiHandle,      1);
+  xTaskCreatePinnedToCore(TaskMQTT,      "MQTT",      8192, NULL, 2, &TaskMQTTHandle,      1);
+  xTaskCreatePinnedToCore(TaskReset,     "Reset",     2048, NULL, 3, &TaskResetHandle,     1);
+  xTaskCreatePinnedToCore(TaskScheduler, "Scheduler", 6144, NULL, 1, &TaskSchedulerHandle, 0);
 
-  Serial.println("✅ FreeRTOS tasks created");
+  Serial.println("All FreeRTOS tasks started");
 }
 
 void loop() {
-  vTaskDelay(portMAX_DELAY); // FreeRTOS takes over
+  vTaskDelay(portMAX_DELAY);
 }
 
 // ======================================================
@@ -111,14 +119,10 @@ void loop() {
 // ======================================================
 void TaskBLE(void* pvParameters) {
   startBLE();
-
   for (;;) {
     if (shouldConnectToWiFi) {
-      Serial.println("📴 Stopping BLE since credentials are received.");
-      if (jsonBT != nullptr) {
-        delete jsonBT;
-        jsonBT = nullptr;
-      }
+      Serial.println("Stopping BLE – WiFi credentials received");
+      if (jsonBT) { delete jsonBT; jsonBT = nullptr; }
       vTaskSuspend(NULL);
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -130,15 +134,8 @@ void TaskBLE(void* pvParameters) {
 // ======================================================
 void TaskWiFi(void* pvParameters) {
   for (;;) {
-    if (shouldConnectToWiFi) {
-      if (!wifiConnected) {
-        connectWiFi();
-      } else {
-        wifiConnected = wifi->isConnected();
-        if (!wifiConnected) {
-          Serial.println("⚠️ Wi-Fi lost, retrying...");
-        }
-      }
+    if (shouldConnectToWiFi && !wifiConnected) {
+      connectWiFi();
     }
     vTaskDelay(5000 / portTICK_PERIOD_MS);
   }
@@ -148,60 +145,143 @@ void TaskWiFi(void* pvParameters) {
 //                        MQTT TASK
 // ======================================================
 void TaskMQTT(void* pvParameters) {
-  const String commandTopic = "ev";
-  const String statusTopic = "status";
+  const String fullPrefix = TOPIC_PREFIX + "/";
 
   mqtt->setCallback([](String topic, String payload) {
-    Serial.printf("📩 MQTT Message | Topic: %s | Payload: %s\n", topic.c_str(), payload.c_str());
+    Serial.printf("MQTT → %s: %s\n", topic.c_str(), payload.c_str());
 
-    if (topic.endsWith("/ev")) {
+    // MODE CHANGE
+    if (topic == TOPIC_PREFIX + "/mode") {
+      payload.toLowerCase();
+      if (payload == "auto" || payload == "manual") {
+        currentMode = payload;
+        storage->setMode(currentMode);
+        mqtt->publish("status", "Mode: " + currentMode);
+        Serial.println("Mode → " + currentMode);
+
+        if (currentMode == "manual") {
+          for (int i = 0; i < EV_NUMBER; i++) T_ev[i].deactivate();
+        }
+      }
+      return;
+    }
+
+    // SCHEDULE COMMAND: {"ev":3,"start":"07:30","end":"08:15"}
+    if (topic == TOPIC_PREFIX + "/schedule") {
       payload.trim();
-      int evIndex = payload.indexOf("ev\":\"");
-      int stateIndex = payload.indexOf("state\":\"");
+      if (payload.startsWith("{") && payload.endsWith("}")) {
 
-      if ( evIndex != -1 && stateIndex != -1) {
-        evIndex += 5;
-        int evEnd = payload.indexOf("\"", evIndex);
-        stateIndex += 8;
-        int stateEnd = payload.indexOf("\"", stateIndex);
+        int evPos = payload.indexOf("\"ev\":");
+        int startPos = payload.indexOf("\"start\":\"");
+        int endPos = payload.indexOf("\"end\":\"");
 
-        if (evEnd != -1 && stateEnd != -1) {
-          int evNumber = payload.substring(evIndex, evEnd).toInt();
-          String state = payload.substring(stateIndex, stateEnd);
+        if (evPos != -1 && startPos != -1 && endPos != -1) {
+          evPos += 6;
+          int evEnd = payload.indexOf(",", evPos);
+          if (evEnd == -1) evEnd = payload.indexOf("}", evPos);
+          int ev = payload.substring(evPos, evEnd).toInt();
 
-          if (evNumber >= 1 && evNumber <= EV_NUMBER) {
-            if (state.equalsIgnoreCase("ON")) {
-              T_ev[evNumber - 1].activate();
-              String log="🔆 Relay "+String(evNumber)+" turned ON";
-              mqtt->publish("status", log);
-              Serial.println(log);
-            } else if (state.equalsIgnoreCase("OFF")) {
-              T_ev[evNumber - 1].deactivate();
-              String log = "🌑 Relay "+String(evNumber)+" turned OFF";
-              mqtt->publish("status", log);
-              Serial.println(log);
-            } else {
-              mqtt->publish("status", "⚠️ Invalid MQTT payload. Use 'ON' or 'OFF'.");
-              Serial.println("⚠️ Invalid MQTT payload.");
-            }
-          } else {
-            mqtt->publish("status", "⚠️ Invalid MQTT payload. Use a valid EV number (1-12).");
-            Serial.println("⚠️ Invalid MQTT payload. Use a valid EV number (1-12).");
+          startPos += 9;
+          int startEnd = payload.indexOf("\"", startPos);
+          String start = payload.substring(startPos, startEnd);
+
+          endPos += 7;
+          int endEnd = payload.indexOf("\"", endPos);
+          String end = payload.substring(endPos, endEnd);
+
+          Serial.printf("Now : %d:%d\n", rtc.now().hour(), rtc.now().minute());
+          Serial.printf("Schedule EV:%d Start:%s End:%s\n", ev, start.c_str(), end.c_str());
+
+          if (ev >= 1 && ev <= 12 && start.length() == 5 && end.length() == 5 &&
+              start[2] == ':' && end[2] == ':') {
+
+            IrrigationSchedule s;
+            s.evId = ev;
+            s.startHour = start.substring(0,2).toInt();
+            s.startMinute = start.substring(3).toInt();
+            s.endHour = end.substring(0,2).toInt();
+            s.endMinute = end.substring(3).toInt();
+            s.enabled = true;
+
+            scheduleManager.addOrUpdate(s);
+            scheduleManager.save();
+
+            mqtt->publish("status", "Schedule saved EV" + String(ev) + " " + start + "-" + end);
+            Serial.println("Schedule saved: " + s.toString());
+            return;
           }
         }
       }
-    }  
+      mqtt->publish("status", "Invalid schedule format");
+      return;
+    }
+
+    // MANUAL EV CONTROL (only in manual mode)
+    if (topic.endsWith("/ev")) {
+      if (currentMode == "auto") {
+        mqtt->publish("status", "Ignored – Auto mode active");
+        return;
+      }
+
+      payload.trim();
+      int evPos = payload.indexOf("\"ev\":");
+      int statePos = payload.indexOf("\"state\":");
+
+      if (evPos != -1 && statePos != -1) {
+        evPos += 6;
+        int evEnd = payload.indexOf(",", evPos);
+        if (evEnd == -1) evEnd = payload.indexOf("}", evPos);
+        int evNum = payload.substring(evPos, evEnd).toInt();
+
+        statePos += 9;
+        int stateEnd = payload.indexOf("\"}", statePos);
+        String state = payload.substring(statePos, stateEnd);
+        Serial.println("EV: " + String(evNum) + " State: " + state);
+        if (evNum >= 1 && evNum <= 12) {
+          if (state.equalsIgnoreCase("ON")) {
+            T_ev[evNum-1].activate();
+            mqtt->publish("status", "Relay " + String(evNum) + " ON");
+          } else if (state.equalsIgnoreCase("OFF")) {
+            T_ev[evNum-1].deactivate();
+            mqtt->publish("status", "Relay " + String(evNum) + " OFF");
+          }
+        }
+      }
+    }
+
+    // Get All Schedules
+    if ( topic == TOPIC_PREFIX + "/get_all_schedules" ) {
+        String schedJson = scheduleManager.toJson();
+        mqtt->publish("status", schedJson);
+        Serial.println("Published schedules: " + schedJson);
+        Serial.println("Published all schedules");
+        return;
+    }
+
+    // Get time status
+    if ( topic == TOPIC_PREFIX + "/get_time"){
+        int hour = rtc.now().hour();
+        int minute = rtc.now().minute();
+        int second = rtc.now().second();
+        String timeStr = String(hour) + ":" + String(minute) + ":" + String(second);        
+        mqtt->publish("status", "Time: " + timeStr);
+        Serial.println("Published time: " + timeStr);
+        return;
+    }
   });
+
+
 
   for (;;) {
     if (wifiConnected) {
       if (!mqtt->isConnected()) {
         if (mqtt->connect()) {
-          mqtt->subscribe(commandTopic);
-          mqtt->publish(statusTopic, "Device online");
-          Serial.println("✅ MQTT subscribed to relay topic");
-        } else {
-          Serial.println("❌ MQTT reconnect failed, retrying...");
+          mqtt->subscribe("mode");
+          mqtt->subscribe("schedule");
+          mqtt->subscribe("status");
+          mqtt->subscribe("ev");
+          mqtt->subscribe("get_all_schedules");
+          mqtt->subscribe("get_time");
         }
       } else {
         mqtt->loop();
@@ -215,18 +295,54 @@ void TaskMQTT(void* pvParameters) {
 //                       RESET BUTTON
 // ======================================================
 void TaskReset(void* pvParameters) {
-  unsigned long pressStart = 0;
-
+  unsigned long pressed = 0;
   for (;;) {
     if (digitalRead(RESET_BUTTON_PIN) == LOW) {
-      if (pressStart == 0) pressStart = millis();
-      if (millis() - pressStart > 5000) {
-        factoryReset();
-      }
+      if (pressed == 0) pressed = millis();
+      if (millis() - pressed > 5000) factoryReset();
     } else {
-      pressStart = 0;
+      pressed = 0;
     }
     vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+// ======================================================
+//                      SCHEDULER TASK
+// ======================================================
+void TaskScheduler(void* pvParameters) {
+  if (!rtc.begin(SDA_PIN, SCL_PIN)) {
+    Serial.println("RTC init failed!");
+  }
+
+  // Optional NTP sync on first boot if WiFi is up
+  if (wifiConnected) {
+    rtc.syncWithNTP("pool.ntp.org", 3600, 3600); // adjust timezone GMT+1
+  }
+
+  for (;;) {
+    if (currentMode == "auto") {
+      for (const auto& s : scheduleManager.schedules) {
+        if (!s.enabled) continue;
+
+        bool on = rtc.isBetween(s.startHour, s.startMinute, s.endHour, s.endMinute);
+        uint8_t idx = s.evId - 1;
+
+        if (on && !T_ev[idx].isActive()) {
+          T_ev[idx].activate();
+          Serial.println("Auto ON: " + s.toString());
+          if (mqtt && mqtt->isConnected())
+            mqtt->publish("status", "Auto ON " + s.toString());
+        }
+        else if (!on && T_ev[idx].isActive()) {
+          T_ev[idx].deactivate();
+          Serial.println("Auto OFF: " + s.toString());
+          if (mqtt && mqtt->isConnected())
+            mqtt->publish("status", "Auto OFF EV" + String(s.evId));
+        }
+      }
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS); // every 500ms
   }
 }
 
@@ -236,77 +352,49 @@ void TaskReset(void* pvParameters) {
 void startBLE() {
   jsonBT = new JsonBluetooth(DEVICE_NAME.c_str());
 
-  jsonBT->onMessage([](String message) {
-    Serial.println("📩 Received via BLE: " + message);
-    message.trim();
+  jsonBT->onMessage([](String msg) {
+    msg.trim();
+    int sPos = msg.indexOf("\"ssid\":\"");
+    int pPos = msg.indexOf("\"password\":\"");
 
-    int ssidIndex = message.indexOf("ssid\":\"");
-    int passwordIndex = message.indexOf("password\":\"");
+    if (sPos != -1 && pPos != -1) {
+      sPos += 8;
+      int sEnd = msg.indexOf("\"", sPos);
+      pPos += 12;
+      int pEnd = msg.indexOf("\"", pPos);
 
-    if (ssidIndex != -1 && passwordIndex != -1) {
-      ssidIndex += 7;
-      int ssidEnd = message.indexOf("\"", ssidIndex);
-      passwordIndex += 11;
-      int passEnd = message.indexOf("\"", passwordIndex);
+      ssid = msg.substring(sPos, sEnd);
+      password = msg.substring(pPos, pEnd);
 
-      if (ssidEnd != -1 && passEnd != -1) {
-        ssid = message.substring(ssidIndex, ssidEnd);
-        password = message.substring(passwordIndex, passEnd);
+      storage->setSSID(ssid);
+      storage->setPassword(password);
+      storage->save();
 
-        Serial.println("✅ Extracted credentials:");
-        Serial.println("  • SSID: " + ssid);
-        Serial.println("  • Password: " + password);
-
-        storage->setSSID(ssid);
-        storage->setPassword(password);
-        storage->save();
-
-        shouldConnectToWiFi = true;
-        vTaskResume(TaskWiFiHandle);
-      }
-    } else {
-      Serial.println("⚠️ Invalid JSON format, expected keys: ssid, password");
+      shouldConnectToWiFi = true;
+      vTaskResume(TaskWiFiHandle);
+      Serial.println("WiFi credentials saved via BLE");
     }
   });
 
-  jsonBT->onConnect([]() {
-    Serial.println("📱 BLE client connected!");
-  });
+  jsonBT->onConnect([]() { Serial.println("BLE connected"); });
+  jsonBT->onDisconnect([]() { Serial.println("BLE disconnected"); });
 
-  jsonBT->onDisconnect([]() {
-    Serial.println("❌ BLE client disconnected.");
-  });
-
-  if (jsonBT->start()) {
-    Serial.println("✅ BLE started successfully!");
-    Serial.print("🔗 Device name: ");
-    Serial.println(DEVICE_NAME);
-  } else {
-    Serial.println("❌ BLE start failed!");
-  }
+  jsonBT->start();
 }
 
 // ======================================================
 //                       WIFI CONNECT
 // ======================================================
 void connectWiFi() {
-  wifi->setDeviceName(DEVICE_NAME.c_str());
   wifi->setCredentials(ssid.c_str(), password.c_str());
-
-  Serial.println("🔌 Attempting to connect to Wi-Fi...");
-
   if (wifi->connect()) {
     wifiConnected = true;
-    Serial.println("✅ Wi-Fi connected!");
-    Serial.println("  🌐 IP: " + String(wifi->getIP().c_str()));
-    Serial.printf("  📶 Signal: %d dBm\n", wifi->getSignalStrength());
-
-    storage->setSSID(ssid);
-    storage->setPassword(password);
+    Serial.print("WiFi connected – IP: ");
+    Serial.println(wifi->getIP().c_str());
     storage->save();
   } else {
     wifiConnected = false;
-    Serial.println("❌ Wi-Fi connection failed. Will retry...");
+    Serial.println("WiFi failed");
   }
 }
 
@@ -314,8 +402,8 @@ void connectWiFi() {
 //                     FACTORY RESET
 // ======================================================
 void factoryReset() {
-  Serial.println("⚠️ Performing factory reset...");
-  if (storage) storage->clear();
-  delay(500);
+  Serial.println("FACTORY RESET!");
+  storage->clear();
+  scheduleManager.clear();
   ESP.restart();
 }
