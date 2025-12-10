@@ -153,20 +153,23 @@ void TaskMQTT(void* pvParameters) {
     // MODE CHANGE
     if (topic == TOPIC_PREFIX + "/mode") {
       payload.toLowerCase();
+      bool deactivateAll = false;
       if (payload == "auto" || payload == "manual") {
+        if (payload != currentMode) deactivateAll = true; // deactivate all EVs on mode change
         currentMode = payload;
         storage->setMode(currentMode);
         mqtt->publish("status", "Mode: " + currentMode);
         Serial.println("Mode → " + currentMode);
 
-        if (currentMode == "manual") {
+        if (deactivateAll) {
+          deactivateAll = false;
           for (int i = 0; i < EV_NUMBER; i++) T_ev[i].deactivate();
         }
       }
       return;
     }
 
-    // SCHEDULE COMMAND: {"ev":3,"start":"07:30","end":"08:15"}
+    // SCHEDULE COMMAND: {"ev":"3","start":"07:30","end":"08:15"}
     if (topic == TOPIC_PREFIX + "/schedule") {
       payload.trim();
       if (payload.startsWith("{") && payload.endsWith("}")) {
@@ -317,7 +320,7 @@ void TaskScheduler(void* pvParameters) {
 
   // Optional NTP sync on first boot if WiFi is up
   if (wifiConnected) {
-    rtc.syncWithNTP("pool.ntp.org", 3600, 3600); // adjust timezone GMT+1
+    rtc.syncWithNTP("pool.ntp.org", 1 * 3600, 0); // Tunisia = UTC + 1
   }
 
   for (;;) {
